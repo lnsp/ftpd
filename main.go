@@ -1,3 +1,5 @@
+// Copyright 2017 Lennart Espe <lennart@espe.tech>
+// All rights reserved.
 package main
 
 import (
