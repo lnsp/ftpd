@@ -56,6 +56,7 @@ const (
 )
 
 var (
+	enableEPLF         = flag.Bool("eplf", false, "Enable EPLF (Easy parsed LIST Format)")
 	serverPassiveBase  = flag.Int("base", 2122, "Set the passive port base")
 	serverPassiveRange = flag.Int("range", 1000, "Set the passive port range")
 	serverPort         = flag.Int("port", 2121, "Set the public server port")
@@ -171,12 +172,24 @@ func handleConn(conn net.Conn) {
 			}
 			transfer(conn, encodeText(output, transferType), dataChannel, statusChannel)
 		case commandList:
-			output, err := buildEPLFListing(dir)
-			if err != nil {
-				sendResponse(conn, statusActionError)
-				break
+			var buffer []byte
+			if *enableEPLF {
+				output, err := buildEPLFListing(dir)
+				if err != nil {
+					sendResponse(conn, statusActionError)
+					break
+				}
+				buffer = output
+			} else {
+				cmd := exec.Command("/bin/ls", "-l", cmdData, dir)
+				output, err := cmd.Output()
+				if err != nil {
+					sendResponse(conn, statusActionError)
+					break
+				}
+				buffer = encodeText(output, transferType)
 			}
-			transfer(conn, output, dataChannel, statusChannel)
+			transfer(conn, buffer, dataChannel, statusChannel)
 		case commandQuit:
 			sendResponse(conn, statusOK, "Connection closing")
 			return
