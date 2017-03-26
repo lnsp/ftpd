@@ -181,7 +181,7 @@ func handleConn(conn net.Conn) {
 				}
 				buffer = output
 			} else {
-				cmd := exec.Command("/bin/ls", "-l", cmdData, dir)
+				cmd := exec.Command("/bin/ls", "-l", dir)
 				output, err := cmd.Output()
 				if err != nil {
 					sendResponse(conn, statusActionError)
