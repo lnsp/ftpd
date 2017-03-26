@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -62,7 +63,7 @@ var (
 	serverSystemName   = flag.String("system", "UNIX", "Set the public system name")
 	statusMessages     = map[int]string{
 		statusSyntaxError:      "Syntax error",
-		statusServiceReady:     "Service ready",
+		statusServiceReady:     "FTP Service ready",
 		statusAuthenticated:    "User logged in, proceed",
 		statusSystemType:       "%s Type: %s",
 		statusNotImplemented:   "Command not implemented",
@@ -90,7 +91,6 @@ var (
 func handleConn(conn net.Conn) {
 	defer conn.Close()
 	sendResponse(conn, statusServiceReady)
-
 	var (
 		reader        = bufio.NewReader(conn)
 		dataChannel   = make(chan []byte)
@@ -99,11 +99,11 @@ func handleConn(conn net.Conn) {
 		transferType  = defaultTransferType
 	)
 	for {
-		line, _, err := reader.ReadLine()
+		rawRequest, _, err := reader.ReadLine()
 		if err != nil {
 			return
 		}
-		cmdTokens := strings.Split(strings.TrimSpace(string(line)), " ")
+		cmdTokens := strings.Split(strings.TrimSpace(string(rawRequest)), " ")
 		if len(cmdTokens) < 1 {
 			sendResponse(conn, statusSyntaxError)
 			continue
@@ -111,13 +111,15 @@ func handleConn(conn net.Conn) {
 		cmdName := strings.ToUpper(cmdTokens[0])
 		cmdData := strings.Join(cmdTokens[1:], " ")
 
+		log.Println("REQUEST", cmdName, cmdData)
+
 		switch cmdName {
 		case commandUser:
 			sendResponse(conn, statusAuthenticated)
 		case commandPassword:
 			sendResponse(conn, statusAuthenticated)
 		case commandSystemType:
-			sendResponse(conn, statusSystemType, serverSystemName, encodeTransferType(defaultTransferType))
+			sendResponse(conn, statusSystemType, *serverSystemName, encodeTransferType(defaultTransferType))
 		case commandPrintDirectory:
 			sendResponse(conn, statusWorkingDirectory, dir)
 		case commandChangeDirectory:
@@ -169,13 +171,12 @@ func handleConn(conn net.Conn) {
 			}
 			transfer(conn, encodeText(output, transferType), dataChannel, statusChannel)
 		case commandList:
-			cmd := exec.Command("/bin/ls", "-l", dir)
-			output, err := cmd.Output()
+			output, err := buildEPLFListing(dir)
 			if err != nil {
 				sendResponse(conn, statusActionError)
 				break
 			}
-			transfer(conn, encodeText(output, transferType), dataChannel, statusChannel)
+			transfer(conn, output, dataChannel, statusChannel)
 		case commandQuit:
 			sendResponse(conn, statusOK, "Connection closing")
 			return
@@ -195,21 +196,13 @@ func buildResponse(status int, params ...interface{}) string {
 }
 
 func sendResponse(out io.Writer, status int, params ...interface{}) error {
-	response := fmt.Sprintf("%d %s\n", status, fmt.Sprintf(statusMessages[status], params...))
+	response := fmt.Sprintf("%d %s\r\n", status, fmt.Sprintf(statusMessages[status], params...))
 	_, err := io.WriteString(out, response)
 	if err != nil {
 		return err
 	}
 	log.Println("RESPONSE", strings.TrimSpace(response))
 	return nil
-}
-
-func splitCommand(command string) (string, string) {
-	tokens := strings.Split(command, " ")
-	if len(tokens) < 1 {
-		return "", ""
-	}
-	return tokens[0], strings.Join(tokens[1:], " ")
 }
 
 func joinPath(p1, p2 string) string {
@@ -307,6 +300,35 @@ func encodeTransferType(tt string) string {
 		extMode = transferTypes['N']
 	}
 	return fmt.Sprintf("%s %s", baseMode, extMode)
+}
+
+func buildEPLFListing(dir string) ([]byte, error) {
+	// This IS DIRTY. Does not work on Windows.
+	output := ""
+	directory, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return []byte{}, err
+	}
+	for _, info := range directory {
+		if !info.Mode().IsDir() && !info.Mode().IsRegular() {
+			continue
+		}
+		output += "+"
+		var stat syscall.Stat_t
+		err = syscall.Stat(filepath.Join(dir, info.Name()), &stat)
+		if err != nil {
+			return []byte{}, err
+		}
+		output += "i" + strconv.FormatInt(int64(stat.Dev), 10) + "." + strconv.FormatUint(stat.Ino, 10) + ","
+		output += "m" + strconv.FormatInt(info.ModTime().Unix(), 10) + ","
+		if info.Mode().IsRegular() {
+			output += "s" + strconv.FormatInt(info.Size(), 10) + ",r,"
+		} else {
+			output += "/,"
+		}
+		output += "\x09" + info.Name() + "\x0d\x0a"
+	}
+	return []byte(output), nil
 }
 
 func main() {
