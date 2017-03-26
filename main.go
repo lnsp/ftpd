@@ -11,6 +11,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -31,31 +32,39 @@ const (
 	statusTransferAbort    = 426
 	statusPassiveMode      = 227
 	statusActionError      = 250
-	commandQuit            = "QUIT"
-	commandUser            = "USER"
-	commandPassword        = "PASS"
-	commandSystemType      = "SYST"
-	commandPrintDirectory  = "PWD"
-	commandChangeDirectory = "CWD"
-	commandRetrieveFile    = "RETR"
-	commandDataType        = "TYPE"
-	commandPassiveMode     = "PASV"
-	commandPort            = "PORT"
-	commandListRaw         = "NLST"
-	commandList            = "LIST"
+	statusFileUnavailable  = 550
+	statusFileInfo         = 213
 
-	defaultPassiveBase  = 2122
-	defaultPassiveRange = 100
+	commandQuit             = "QUIT"
+	commandUser             = "USER"
+	commandPassword         = "PASS"
+	commandSystemType       = "SYST"
+	commandPrintDirectory   = "PWD"
+	commandChangeDirectory  = "CWD"
+	commandModificationTime = "MDTM"
+	commandFileSize         = "SIZE"
+	commandRetrieveFile     = "RETR"
+	commandDataType         = "TYPE"
+	commandPassiveMode      = "PASV"
+	commandPort             = "PORT"
+	commandListRaw          = "NLST"
+	commandList             = "LIST"
+
+	modTimeFormat       = "20060102150405"
+	defaultTransferType = "AN"
 )
 
 var (
-	serverPort   = flag.String("port", "2121", "Sets the public server port")
-	serverIP     = flag.String("ip", "127.0.0.1", "Sets the public server IP")
-	descriptions = map[int]string{
+	serverPassiveBase  = flag.Int("base", 2122, "Set the passive port base")
+	serverPassiveRange = flag.Int("range", 1000, "Set the passive port range")
+	serverPort         = flag.Int("port", 2121, "Set the public server port")
+	serverIP           = flag.String("ip", "127.0.0.1", "Set the public server IP")
+	serverSystemName   = flag.String("system", "UNIX", "Set the public system name")
+	statusMessages     = map[int]string{
 		statusSyntaxError:      "Syntax error",
 		statusServiceReady:     "Service ready",
 		statusAuthenticated:    "User logged in, proceed",
-		statusSystemType:       "%s system",
+		statusSystemType:       "%s Type: %s",
 		statusNotImplemented:   "Command not implemented",
 		statusWorkingDirectory: "\"%s\" is working directory.",
 		statusOK:               "%s",
@@ -64,8 +73,164 @@ var (
 		statusTransferDone:     "Closing data connection",
 		statusTransferAbort:    "Connection closed; transfer aborted",
 		statusPassiveMode:      "Entering Passive Mode (%s)",
+		statusFileUnavailable:  "File is unavailable",
+		statusFileInfo:         "%s",
+	}
+	transferTypes = map[rune]string{
+		'A': "ASCII",
+		'E': "EBCDIC",
+		'I': "BINARY",
+		'L': "LOCAL FORMAT",
+		'N': "NON PRINT",
+		'T': "TELNET",
+		'C': "ASA CARRIAGE CONTROL",
 	}
 )
+
+func handleConn(conn net.Conn) {
+	defer conn.Close()
+	sendResponse(conn, statusServiceReady)
+
+	var (
+		reader        = bufio.NewReader(conn)
+		dataChannel   = make(chan []byte)
+		statusChannel = make(chan error)
+		dir           = "/"
+		transferType  = defaultTransferType
+	)
+	for {
+		line, _, err := reader.ReadLine()
+		if err != nil {
+			return
+		}
+		cmdTokens := strings.Split(strings.TrimSpace(string(line)), " ")
+		if len(cmdTokens) < 1 {
+			sendResponse(conn, statusSyntaxError)
+			continue
+		}
+		cmdName := strings.ToUpper(cmdTokens[0])
+		cmdData := strings.Join(cmdTokens[1:], " ")
+
+		switch cmdName {
+		case commandUser:
+			sendResponse(conn, statusAuthenticated)
+		case commandPassword:
+			sendResponse(conn, statusAuthenticated)
+		case commandSystemType:
+			sendResponse(conn, statusSystemType, serverSystemName, encodeTransferType(defaultTransferType))
+		case commandPrintDirectory:
+			sendResponse(conn, statusWorkingDirectory, dir)
+		case commandChangeDirectory:
+			dir = joinPath(dir, cmdData)
+			sendResponse(conn, statusWorkingDirectory, dir)
+		case commandDataType:
+			transferType = cmdData
+			encodedType := encodeTransferType(transferType)
+			if encodedType == "INVALID" {
+				transferType = defaultTransferType
+				sendResponse(conn, statusActionError)
+				break
+			}
+			sendResponse(conn, statusOK, "TYPE set to "+encodedType)
+		case commandModificationTime:
+			info, err := os.Stat(joinPath(dir, cmdData))
+			if err != nil {
+				sendResponse(conn, statusFileUnavailable)
+				break
+			}
+			sendResponse(conn, statusFileInfo, info.ModTime().Format(modTimeFormat))
+		case commandFileSize:
+			info, err := os.Stat(joinPath(dir, cmdData))
+			if err != nil {
+				sendResponse(conn, statusFileUnavailable)
+				break
+			}
+			sendResponse(conn, statusFileInfo, strconv.FormatInt(info.Size(), 10))
+		case commandRetrieveFile:
+			buffer, err := ioutil.ReadFile(joinPath(dir, cmdData))
+			if err != nil {
+				sendResponse(conn, statusActionError)
+				break
+			}
+			transfer(conn, buffer, dataChannel, statusChannel)
+		case commandPassiveMode:
+			passiveHost := *serverIP + ":" + strconv.Itoa(*serverPassiveBase+rand.Intn(*serverPassiveRange))
+			dataChannel, statusChannel = transferPassive(passiveHost)
+			sendResponse(conn, statusPassiveMode, generateFTPHost(passiveHost))
+		case commandPort:
+			dataChannel, statusChannel = transferActive(parseFTPHost(cmdData))
+			sendResponse(conn, statusOK, "PORT command successfull")
+		case commandListRaw:
+			cmd := exec.Command("/bin/ls", "-1", dir)
+			output, err := cmd.Output()
+			if err != nil {
+				sendResponse(conn, statusActionError)
+				break
+			}
+			transfer(conn, encodeText(output, transferType), dataChannel, statusChannel)
+		case commandList:
+			cmd := exec.Command("/bin/ls", "-l", dir)
+			output, err := cmd.Output()
+			if err != nil {
+				sendResponse(conn, statusActionError)
+				break
+			}
+			transfer(conn, encodeText(output, transferType), dataChannel, statusChannel)
+		case commandQuit:
+			sendResponse(conn, statusOK, "Connection closing")
+			return
+		default:
+			sendResponse(conn, statusNotImplemented)
+		}
+	}
+}
+
+func encodeText(text []byte, mode string) []byte {
+	return []byte(strings.Replace(string(text), "\n", "\r\n", -1))
+}
+
+func buildResponse(status int, params ...interface{}) string {
+	resp := fmt.Sprintf(statusMessages[status], params...)
+	return fmt.Sprintf("%d %s\n", status, resp)
+}
+
+func sendResponse(out io.Writer, status int, params ...interface{}) error {
+	response := fmt.Sprintf("%d %s\n", status, fmt.Sprintf(statusMessages[status], params...))
+	_, err := io.WriteString(out, response)
+	if err != nil {
+		return err
+	}
+	log.Println("RESPONSE", strings.TrimSpace(response))
+	return nil
+}
+
+func splitCommand(command string) (string, string) {
+	tokens := strings.Split(command, " ")
+	if len(tokens) < 1 {
+		return "", ""
+	}
+	return tokens[0], strings.Join(tokens[1:], " ")
+}
+
+func joinPath(p1, p2 string) string {
+	if filepath.IsAbs(p2) {
+		p1 = p2
+	} else {
+		p1 = filepath.Join(p1, p2)
+	}
+	p1, _ = filepath.Abs(p1)
+	return p1
+}
+
+func transfer(conn net.Conn, data []byte, dataChannel chan []byte, statusChannel chan error) {
+	sendResponse(conn, statusTransferReady)
+	dataChannel <- data
+	err := <-statusChannel
+	if err != nil {
+		sendResponse(conn, statusTransferAbort)
+	}
+	sendResponse(conn, statusTransferDone)
+}
 
 func transferPassive(host string) (chan []byte, chan error) {
 	data := make(chan []byte)
@@ -109,42 +274,6 @@ func transferActive(host string) (chan []byte, chan error) {
 	return data, status
 }
 
-func encodeASCII(ascii string) []byte {
-	return []byte(strings.Replace(ascii, "\n", "\r\n", -1))
-}
-
-func buildResponse(status int, params ...interface{}) string {
-	resp := fmt.Sprintf(descriptions[status], params...)
-	return fmt.Sprintf("%d %s\n", status, resp)
-}
-
-func sendResponse(out io.Writer, status int, params ...interface{}) error {
-	response := buildResponse(status, params...)
-	_, err := io.WriteString(out, response)
-	if err != nil {
-		return err
-	}
-	fmt.Println("RESPONSE", strings.TrimSpace(response))
-	return nil
-}
-
-func splitCommand(command string) (string, string) {
-	tokens := strings.Split(command, " ")
-	if len(tokens) < 1 {
-		return "", ""
-	}
-	return tokens[0], strings.Join(tokens[1:], " ")
-}
-
-func buildDirectoryListing(dir, flags string) string {
-	cmd := exec.Command("/bin/ls", "-l", dir)
-	output, err := cmd.Output()
-	if err != nil {
-		return err.Error() + "\n"
-	}
-	return string(output)
-}
-
 func parseFTPHost(ports string) string {
 	tokens := strings.Split(ports, ",")
 	host := strings.Join(tokens[:4], ".")
@@ -161,102 +290,29 @@ func generateFTPHost(hostport string) string {
 	return fmt.Sprintf("%s,%d,%d", strings.Join(ips, ","), port/256, port%256)
 }
 
-func handleConn(conn net.Conn) {
-	defer conn.Close()
-
-	io.WriteString(conn, buildResponse(statusServiceReady))
-	var dataChannel chan []byte
-	var statusChannel chan error
-
-	dir := "/"
-	reader := bufio.NewReader(conn)
-	for {
-		line, _, err := reader.ReadLine()
-		if err != nil {
-			return
-		}
-		command := strings.TrimSpace(string(line))
-		fmt.Println("REQUEST", command)
-		name, data := splitCommand(command)
-		switch name {
-		case commandUser:
-			sendResponse(conn, statusAuthenticated)
-		case commandPassword:
-			sendResponse(conn, statusAuthenticated)
-		case commandSystemType:
-			sendResponse(conn, statusSystemType, "UNIX")
-		case commandPrintDirectory:
-			sendResponse(conn, statusWorkingDirectory, dir)
-		case commandChangeDirectory:
-			if strings.HasPrefix(data, "/") {
-				dir = data
-			} else {
-				dir = filepath.Join(dir, data)
-			}
-			sendResponse(conn, statusWorkingDirectory, dir)
-		case commandDataType:
-			sendResponse(conn, statusOK, "Type set to "+data)
-		case commandRetrieveFile:
-			var filename string
-			if strings.HasPrefix(data, "/") {
-				filename = data
-			} else {
-				filename = filepath.Join(dir, data)
-			}
-			data, err := ioutil.ReadFile(filename)
-			if err != nil {
-				sendResponse(conn, statusActionError)
-				break
-			}
-			transfer(conn, data, dataChannel, statusChannel)
-		case commandPassiveMode:
-			passiveHost := *serverIP + ":" + strconv.Itoa(defaultPassiveBase+rand.Intn(defaultPassiveRange))
-			dataChannel, statusChannel = transferPassive(passiveHost)
-			sendResponse(conn, statusPassiveMode, generateFTPHost(passiveHost))
-		case commandPort:
-			dataChannel, statusChannel = transferActive(parseFTPHost(data))
-			sendResponse(conn, statusOK, "PORT command successfull")
-		case commandListRaw:
-			cmd := exec.Command("/bin/ls", "-1", dir)
-			output, err := cmd.Output()
-			if err != nil {
-				sendResponse(conn, statusActionError)
-				break
-			}
-			data := encodeASCII(string(output))
-			transfer(conn, data, dataChannel, statusChannel)
-		case commandList:
-			cmd := exec.Command("/bin/ls", "-l", dir)
-			output, err := cmd.Output()
-			if err != nil {
-				sendResponse(conn, statusActionError)
-				break
-			}
-			data := encodeASCII(string(output))
-			transfer(conn, data, dataChannel, statusChannel)
-		case commandQuit:
-			sendResponse(conn, statusOK, "Connection closing")
-			return
-		default:
-			sendResponse(conn, statusNotImplemented)
-		}
+func encodeTransferType(tt string) string {
+	var (
+		baseMode, extMode string
+		found             bool
+		modeRunes         = []rune(tt)
+	)
+	if baseMode, found = transferTypes[modeRunes[0]]; !found {
+		return "INVALID"
 	}
-}
-
-func transfer(conn net.Conn, data []byte, dataChannel chan []byte, statusChannel chan error) {
-	sendResponse(conn, statusTransferReady)
-	dataChannel <- data
-	err := <-statusChannel
-	if err != nil {
-		sendResponse(conn, statusTransferAbort)
+	if len(modeRunes) == 2 {
+		if extMode, found = transferTypes[modeRunes[1]]; !found {
+			return "INVALID"
+		}
+	} else {
+		extMode = transferTypes['N']
 	}
-	sendResponse(conn, statusTransferDone)
+	return fmt.Sprintf("%s %s", baseMode, extMode)
 }
 
 func main() {
 	flag.Parse()
 
-	listener, err := net.Listen("tcp", *serverIP+":"+*serverPort)
+	listener, err := net.Listen("tcp", *serverIP+":"+strconv.Itoa(*serverPort))
 	if err != nil {
 		log.Fatal(err)
 	}
