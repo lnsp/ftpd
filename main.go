@@ -71,6 +71,7 @@ const (
 	commandChangeDirectory  = "CWD"
 	commandModificationTime = "MDTM"
 	commandFileSize         = "SIZE"
+	commandStoreFile        = "STOR"
 	commandRetrieveFile     = "RETR"
 	commandDataType         = "TYPE"
 	commandPassiveMode      = "PASV"
@@ -80,6 +81,7 @@ const (
 
 	modTimeFormat       = "20060102150405"
 	defaultTransferType = "AN"
+	transferBufferSize  = 4096
 )
 
 var (
@@ -152,11 +154,12 @@ func (conn *Connection) log(params ...interface{}) {
 	log.Printf("[#%d] %s", conn.ID, fmt.Sprintln(params...))
 }
 
-func handleConn(conn *Connection) {
+func (conn *Connection) handle() {
 	defer conn.Close()
 	sendResponse(conn, statusServiceReady)
 	var (
 		reader        = bufio.NewReader(conn)
+		modeChannel   = make(chan bool)
 		dataChannel   = make(chan []byte)
 		statusChannel = make(chan error)
 		dir           = "/"
@@ -218,13 +221,24 @@ func handleConn(conn *Connection) {
 				sendResponse(conn, statusActionNotTaken)
 				break
 			}
-			transfer(conn, buffer, dataChannel, statusChannel)
+			sendTo(conn, buffer, modeChannel, dataChannel, statusChannel)
+		case commandStoreFile:
+			path := joinPath(dir, cmdData)
+			data, success := receiveFrom(conn, modeChannel, dataChannel, statusChannel)
+			if !success {
+				break
+			}
+			if err := ioutil.WriteFile(path, data, 0644); err != nil {
+				sendResponse(conn, statusActionNotTaken)
+				break
+			}
+			sendResponse(conn, statusActionDone)
 		case commandPassiveMode:
 			passiveHost := *serverIP + ":" + strconv.Itoa(*serverPassiveBase+rand.Intn(*serverPassiveRange))
-			dataChannel, statusChannel = transferPassive(passiveHost)
+			modeChannel, dataChannel, statusChannel = transferPassive(passiveHost)
 			sendResponse(conn, statusPassiveMode, generateFTPHost(passiveHost))
 		case commandPort:
-			dataChannel, statusChannel = transferActive(parseFTPHost(cmdData))
+			modeChannel, dataChannel, statusChannel = transferActive(parseFTPHost(cmdData))
 			sendResponse(conn, statusOK, "PORT command successfull")
 		case commandListRaw:
 			cmd := exec.Command("/bin/ls", "-1", dir)
@@ -233,7 +247,7 @@ func handleConn(conn *Connection) {
 				sendResponse(conn, statusLocalError)
 				break
 			}
-			transfer(conn, encodeText(output, transferType), dataChannel, statusChannel)
+			sendTo(conn, encodeText(output, transferType), modeChannel, dataChannel, statusChannel)
 		case commandList:
 			var buffer []byte
 			if *enableEPLF {
@@ -252,7 +266,7 @@ func handleConn(conn *Connection) {
 				}
 				buffer = encodeText(output, transferType)
 			}
-			transfer(conn, buffer, dataChannel, statusChannel)
+			sendTo(conn, buffer, modeChannel, dataChannel, statusChannel)
 		case commandQuit:
 			sendResponse(conn, statusOK, "Connection closing")
 			return
@@ -291,56 +305,108 @@ func joinPath(p1, p2 string) string {
 	return p1
 }
 
-func transfer(conn *Connection, data []byte, dataChannel chan []byte, statusChannel chan error) {
+func receiveFrom(conn *Connection, modeChannel chan bool, dataChannel chan []byte, statusChannel chan error) ([]byte, bool) {
 	sendResponse(conn, statusTransferReady)
+	modeChannel <- true
+	err := <-statusChannel
+	if err != nil {
+		sendResponse(conn, statusTransferAbort)
+		return []byte{}, false
+	}
+	data := <-dataChannel
+	sendResponse(conn, statusTransferDone)
+	return data, true
+}
+
+func sendTo(conn *Connection, data []byte, modeChannel chan bool, dataChannel chan []byte, statusChannel chan error) bool {
+	sendResponse(conn, statusTransferReady)
+	modeChannel <- false
 	dataChannel <- data
 	err := <-statusChannel
 	if err != nil {
 		sendResponse(conn, statusTransferAbort)
+		return false
 	}
 	sendResponse(conn, statusTransferDone)
+	return true
 }
 
-func transferPassive(host string) (chan []byte, chan error) {
+// transferPassive passively transfers data.
+// It listens on a specific port and waits for a user to connect.
+func transferPassive(host string) (chan bool, chan []byte, chan error) {
+	mode := make(chan bool)
 	data := make(chan []byte)
 	status := make(chan error)
 	go func() {
 		listener, err := net.Listen("tcp", host)
 		if err != nil {
 			status <- err
+			return
 		}
 		defer listener.Close()
 		conn, err := listener.Accept()
 		if err != nil {
 			status <- err
+			return
 		}
 		defer conn.Close()
-		_, err = conn.Write(<-data)
-		if err != nil {
-			status <- err
+
+		if <-mode {
+			// Receive data passively
+			buffer, err := ioutil.ReadAll(conn)
+			if err != nil {
+				status <- err
+				return
+			}
+			status <- nil
+			data <- buffer
+		} else {
+			// Send data passively
+			_, err = conn.Write(<-data)
+			if err != nil {
+				status <- err
+			}
+			status <- nil
 		}
-		status <- nil
 	}()
-	return data, status
+	return mode, data, status
 }
 
-func transferActive(host string) (chan []byte, chan error) {
+// transferActive actively transfers data.
+// It connects to the target host and reads or writes the data from the buffer channel.
+func transferActive(host string) (chan bool, chan []byte, chan error) {
+	mode := make(chan bool)
 	data := make(chan []byte)
 	status := make(chan error)
 	go func() {
-		object := <-data
-		conn, err := net.Dial("tcp", host)
-		if err != nil {
-			status <- err
+		if <-mode {
+			conn, err := net.Dial("tcp", host)
+			if err != nil {
+				status <- err
+			}
+			defer conn.Close()
+			buffer, err := ioutil.ReadAll(conn)
+			if err != nil {
+				status <- err
+				return
+			}
+			status <- nil
+			data <- buffer
+		} else {
+			object := <-data
+			conn, err := net.Dial("tcp", host)
+			if err != nil {
+				status <- err
+			}
+			defer conn.Close()
+			_, err = conn.Write(object)
+			if err != nil {
+				status <- err
+			}
+			status <- nil
 		}
-		defer conn.Close()
-		_, err = conn.Write(object)
-		if err != nil {
-			status <- err
-		}
-		status <- nil
 	}()
-	return data, status
+	return mode, data, status
 }
 
 func parseFTPHost(ports string) string {
@@ -421,7 +487,7 @@ func main() {
 			continue
 		}
 		log.Printf("NEW CONNECTION #%d (%s)\n", connectionIndex, conn.RemoteAddr())
-		go handleConn(&Connection{conn, connectionIndex})
+		go (&Connection{conn, connectionIndex}).handle()
 		connectionIndex++
 	}
 }
