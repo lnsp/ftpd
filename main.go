@@ -232,7 +232,6 @@ func (conn *Connection) handle() {
 				sendResponse(conn, statusActionNotTaken)
 				break
 			}
-			sendResponse(conn, statusActionDone)
 		case commandPassiveMode:
 			passiveHost := *serverIP + ":" + strconv.Itoa(*serverPassiveBase+rand.Intn(*serverPassiveRange))
 			modeChannel, dataChannel, statusChannel = transferPassive(passiveHost)
@@ -365,6 +364,7 @@ func transferPassive(host string) (chan bool, chan []byte, chan error) {
 			_, err = conn.Write(<-data)
 			if err != nil {
 				status <- err
+				return
 			}
 			status <- nil
 		}
@@ -383,6 +383,7 @@ func transferActive(host string) (chan bool, chan []byte, chan error) {
 			conn, err := net.Dial("tcp", host)
 			if err != nil {
 				status <- err
+				return
 			}
 			defer conn.Close()
 			buffer, err := ioutil.ReadAll(conn)
@@ -397,11 +398,13 @@ func transferActive(host string) (chan bool, chan []byte, chan error) {
 			conn, err := net.Dial("tcp", host)
 			if err != nil {
 				status <- err
+				return
 			}
 			defer conn.Close()
 			_, err = conn.Write(object)
 			if err != nil {
 				status <- err
+				return
 			}
 			status <- nil
 		}
