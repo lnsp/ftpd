@@ -145,28 +145,46 @@ var (
 	}
 )
 
+type ConnectionFactory struct {
+	index int
+}
+
+func (fac *ConnectionFactory) NewHandler(conn net.Conn) *Connection {
+	defer func() { fac.index++ }()
+	return &Connection{
+		conn,
+		fac.index,
+		bufio.NewReader(conn),
+		make(chan bool),
+		make(chan []byte),
+		make(chan error),
+		"/",
+		"anonymous",
+		defaultTransferType,
+	}
+}
+
 type Connection struct {
 	net.Conn
-	ID int
+	ID           int
+	Reader       *bufio.Reader
+	Mode         chan bool
+	Data         chan []byte
+	Status       chan error
+	Dir          string
+	User         string
+	TransferType string
 }
 
 func (conn *Connection) log(params ...interface{}) {
 	log.Printf("[#%d] %s", conn.ID, fmt.Sprintln(params...))
 }
 
-func (conn *Connection) handle() {
+func (conn *Connection) Handle() {
 	defer conn.Close()
 	sendResponse(conn, statusServiceReady)
-	var (
-		reader        = bufio.NewReader(conn)
-		modeChannel   = make(chan bool)
-		dataChannel   = make(chan []byte)
-		statusChannel = make(chan error)
-		dir           = "/"
-		transferType  = defaultTransferType
-	)
 	for {
-		rawRequest, _, err := reader.ReadLine()
+		rawRequest, _, err := conn.Reader.ReadLine()
 		if err != nil {
 			return
 		}
@@ -188,43 +206,42 @@ func (conn *Connection) handle() {
 		case commandSystemType:
 			sendResponse(conn, statusSystemType, *serverSystemName, encodeTransferType(defaultTransferType))
 		case commandPrintDirectory:
-			sendResponse(conn, statusWorkingDirectory, dir)
+			sendResponse(conn, statusWorkingDirectory, conn.Dir)
 		case commandChangeDirectory:
-			dir = joinPath(dir, cmdData)
-			sendResponse(conn, statusWorkingDirectory, dir)
+			conn.Dir = joinPath(conn.Dir, cmdData)
+			sendResponse(conn, statusWorkingDirectory, conn.Dir)
 		case commandDataType:
-			transferType = cmdData
-			encodedType := encodeTransferType(transferType)
+			encodedType := encodeTransferType(cmdData)
 			if encodedType == "INVALID" {
-				transferType = defaultTransferType
 				sendResponse(conn, statusSyntaxParamError)
 				break
 			}
+			conn.TransferType = cmdData
 			sendResponse(conn, statusOK, "TYPE set to "+encodedType)
 		case commandModificationTime:
-			info, err := os.Stat(joinPath(dir, cmdData))
+			info, err := os.Stat(joinPath(conn.Dir, cmdData))
 			if err != nil {
 				sendResponse(conn, statusActionNotTaken)
 				break
 			}
 			sendResponse(conn, statusFileInfo, info.ModTime().Format(modTimeFormat))
 		case commandFileSize:
-			info, err := os.Stat(joinPath(dir, cmdData))
+			info, err := os.Stat(joinPath(conn.Dir, cmdData))
 			if err != nil {
 				sendResponse(conn, statusActionNotTaken)
 				break
 			}
 			sendResponse(conn, statusFileInfo, strconv.FormatInt(info.Size(), 10))
 		case commandRetrieveFile:
-			buffer, err := ioutil.ReadFile(joinPath(dir, cmdData))
+			buffer, err := ioutil.ReadFile(joinPath(conn.Dir, cmdData))
 			if err != nil {
 				sendResponse(conn, statusActionNotTaken)
 				break
 			}
-			sendTo(conn, buffer, modeChannel, dataChannel, statusChannel)
+			sendTo(conn, buffer)
 		case commandStoreFile:
-			path := joinPath(dir, cmdData)
-			data, success := receiveFrom(conn, modeChannel, dataChannel, statusChannel)
+			path := joinPath(conn.Dir, cmdData)
+			data, success := receiveFrom(conn)
 			if !success {
 				break
 			}
@@ -234,38 +251,38 @@ func (conn *Connection) handle() {
 			}
 		case commandPassiveMode:
 			passiveHost := *serverIP + ":" + strconv.Itoa(*serverPassiveBase+rand.Intn(*serverPassiveRange))
-			modeChannel, dataChannel, statusChannel = transferPassive(passiveHost)
+			transferPassive(passiveHost, conn)
 			sendResponse(conn, statusPassiveMode, generateFTPHost(passiveHost))
 		case commandPort:
-			modeChannel, dataChannel, statusChannel = transferActive(parseFTPHost(cmdData))
+			transferActive(parseFTPHost(cmdData), conn)
 			sendResponse(conn, statusOK, "PORT command successfull")
 		case commandListRaw:
-			cmd := exec.Command("/bin/ls", "-1", dir)
+			cmd := exec.Command("/bin/ls", "-1", conn.Dir)
 			output, err := cmd.Output()
 			if err != nil {
 				sendResponse(conn, statusLocalError)
 				break
 			}
-			sendTo(conn, encodeText(output, transferType), modeChannel, dataChannel, statusChannel)
+			sendTo(conn, encodeText(output, conn.TransferType))
 		case commandList:
 			var buffer []byte
 			if *enableEPLF {
-				output, err := buildEPLFListing(dir)
+				output, err := buildEPLFListing(conn.Dir)
 				if err != nil {
 					sendResponse(conn, statusLocalError)
 					break
 				}
 				buffer = output
 			} else {
-				cmd := exec.Command("/bin/ls", "-l", dir)
+				cmd := exec.Command("/bin/ls", "-l", conn.Dir)
 				output, err := cmd.Output()
 				if err != nil {
 					sendResponse(conn, statusLocalError)
 					break
 				}
-				buffer = encodeText(output, transferType)
+				buffer = encodeText(output, conn.TransferType)
 			}
-			sendTo(conn, buffer, modeChannel, dataChannel, statusChannel)
+			sendTo(conn, buffer)
 		case commandQuit:
 			sendResponse(conn, statusOK, "Connection closing")
 			return
@@ -304,24 +321,24 @@ func joinPath(p1, p2 string) string {
 	return p1
 }
 
-func receiveFrom(conn *Connection, modeChannel chan bool, dataChannel chan []byte, statusChannel chan error) ([]byte, bool) {
+func receiveFrom(conn *Connection) ([]byte, bool) {
 	sendResponse(conn, statusTransferReady)
-	modeChannel <- true
-	err := <-statusChannel
+	conn.Mode <- true
+	err := <-conn.Status
 	if err != nil {
 		sendResponse(conn, statusTransferAbort)
 		return []byte{}, false
 	}
-	data := <-dataChannel
+	data := <-conn.Data
 	sendResponse(conn, statusTransferDone)
 	return data, true
 }
 
-func sendTo(conn *Connection, data []byte, modeChannel chan bool, dataChannel chan []byte, statusChannel chan error) bool {
+func sendTo(conn *Connection, data []byte) bool {
 	sendResponse(conn, statusTransferReady)
-	modeChannel <- false
-	dataChannel <- data
-	err := <-statusChannel
+	conn.Mode <- false
+	conn.Data <- data
+	err := <-conn.Status
 	if err != nil {
 		sendResponse(conn, statusTransferAbort)
 		return false
@@ -332,84 +349,76 @@ func sendTo(conn *Connection, data []byte, modeChannel chan bool, dataChannel ch
 
 // transferPassive passively transfers data.
 // It listens on a specific port and waits for a user to connect.
-func transferPassive(host string) (chan bool, chan []byte, chan error) {
-	mode := make(chan bool)
-	data := make(chan []byte)
-	status := make(chan error)
+func transferPassive(host string, peer *Connection) {
 	go func() {
 		listener, err := net.Listen("tcp", host)
 		if err != nil {
-			status <- err
+			peer.Status <- err
 			return
 		}
 		defer listener.Close()
 		conn, err := listener.Accept()
 		if err != nil {
-			status <- err
+			peer.Status <- err
 			return
 		}
 		defer conn.Close()
 
-		if <-mode {
+		if <-peer.Mode {
 			// Receive data passively
 			buffer, err := ioutil.ReadAll(conn)
 			if err != nil {
-				status <- err
+				peer.Status <- err
 				return
 			}
-			status <- nil
-			data <- buffer
+			peer.Status <- nil
+			peer.Data <- buffer
 		} else {
 			// Send data passively
-			_, err = conn.Write(<-data)
+			_, err = conn.Write(<-peer.Data)
 			if err != nil {
-				status <- err
+				peer.Status <- err
 				return
 			}
-			status <- nil
+			peer.Status <- nil
 		}
 	}()
-	return mode, data, status
 }
 
 // transferActive actively transfers data.
 // It connects to the target host and reads or writes the data from the buffer channel.
-func transferActive(host string) (chan bool, chan []byte, chan error) {
-	mode := make(chan bool)
-	data := make(chan []byte)
-	status := make(chan error)
+func transferActive(host string, peer *Connection) {
 	go func() {
-		if <-mode {
+		if <-peer.Mode {
 			conn, err := net.Dial("tcp", host)
 			if err != nil {
-				status <- err
+				peer.Status <- err
 				return
 			}
 			defer conn.Close()
 			buffer, err := ioutil.ReadAll(conn)
 			if err != nil {
-				status <- err
+				peer.Status <- err
 				return
 			}
-			status <- nil
-			data <- buffer
+			peer.Status <- nil
+			peer.Data <- buffer
 		} else {
-			object := <-data
+			object := <-peer.Data
 			conn, err := net.Dial("tcp", host)
 			if err != nil {
-				status <- err
+				peer.Status <- err
 				return
 			}
 			defer conn.Close()
 			_, err = conn.Write(object)
 			if err != nil {
-				status <- err
+				peer.Status <- err
 				return
 			}
-			status <- nil
+			peer.Status <- nil
 		}
 	}()
-	return mode, data, status
 }
 
 func parseFTPHost(ports string) string {
@@ -478,19 +487,18 @@ func buildEPLFListing(dir string) ([]byte, error) {
 
 func main() {
 	flag.Parse()
+	factory := ConnectionFactory{}
 	listener, err := net.Listen("tcp", *serverIP+":"+strconv.Itoa(*serverPort))
 	if err != nil {
 		log.Fatal(err)
 	}
-	connectionIndex := 0
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Print(err)
 			continue
 		}
-		log.Printf("NEW CONNECTION #%d (%s)\n", connectionIndex, conn.RemoteAddr())
-		go (&Connection{conn, connectionIndex}).handle()
-		connectionIndex++
+		handler := factory.NewHandler(conn)
+		go handler.Handle()
 	}
 }
