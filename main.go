@@ -145,13 +145,13 @@ var (
 	}
 )
 
-type ConnectionFactory struct {
+type connectionFactory struct {
 	index int
 }
 
-func (fac *ConnectionFactory) NewHandler(conn net.Conn) *Connection {
+func (fac *connectionFactory) newHandler(conn net.Conn) *connection {
 	defer func() { fac.index++ }()
-	return &Connection{
+	return &connection{
 		conn,
 		fac.index,
 		bufio.NewReader(conn),
@@ -164,7 +164,7 @@ func (fac *ConnectionFactory) NewHandler(conn net.Conn) *Connection {
 	}
 }
 
-type Connection struct {
+type connection struct {
 	net.Conn
 	ID           int
 	Reader       *bufio.Reader
@@ -176,11 +176,11 @@ type Connection struct {
 	TransferType string
 }
 
-func (conn *Connection) log(params ...interface{}) {
+func (conn *connection) log(params ...interface{}) {
 	log.Printf("[#%d] %s", conn.ID, fmt.Sprintln(params...))
 }
 
-func (conn *Connection) Handle() {
+func (conn *connection) handle() {
 	defer conn.Close()
 	sendResponse(conn, statusServiceReady)
 	for {
@@ -296,12 +296,7 @@ func encodeText(text []byte, mode string) []byte {
 	return []byte(strings.Replace(string(text), "\n", "\r\n", -1))
 }
 
-func buildResponse(status int, params ...interface{}) string {
-	resp := fmt.Sprintf(statusMessages[status], params...)
-	return fmt.Sprintf("%d %s\n", status, resp)
-}
-
-func sendResponse(conn *Connection, status int, params ...interface{}) error {
+func sendResponse(conn *connection, status int, params ...interface{}) error {
 	response := fmt.Sprintf("%d %s\r\n", status, fmt.Sprintf(statusMessages[status], params...))
 	_, err := io.WriteString(conn, response)
 	if err != nil {
@@ -321,7 +316,7 @@ func joinPath(p1, p2 string) string {
 	return p1
 }
 
-func receiveFrom(conn *Connection) ([]byte, bool) {
+func receiveFrom(conn *connection) ([]byte, bool) {
 	sendResponse(conn, statusTransferReady)
 	conn.Mode <- true
 	err := <-conn.Status
@@ -334,7 +329,7 @@ func receiveFrom(conn *Connection) ([]byte, bool) {
 	return data, true
 }
 
-func sendTo(conn *Connection, data []byte) bool {
+func sendTo(conn *connection, data []byte) bool {
 	sendResponse(conn, statusTransferReady)
 	conn.Mode <- false
 	conn.Data <- data
@@ -349,7 +344,7 @@ func sendTo(conn *Connection, data []byte) bool {
 
 // transferPassive passively transfers data.
 // It listens on a specific port and waits for a user to connect.
-func transferPassive(host string, peer *Connection) {
+func transferPassive(host string, peer *connection) {
 	go func() {
 		listener, err := net.Listen("tcp", host)
 		if err != nil {
@@ -387,7 +382,7 @@ func transferPassive(host string, peer *Connection) {
 
 // transferActive actively transfers data.
 // It connects to the target host and reads or writes the data from the buffer channel.
-func transferActive(host string, peer *Connection) {
+func transferActive(host string, peer *connection) {
 	go func() {
 		if <-peer.Mode {
 			conn, err := net.Dial("tcp", host)
@@ -487,18 +482,19 @@ func buildEPLFListing(dir string) ([]byte, error) {
 
 func main() {
 	flag.Parse()
-	factory := ConnectionFactory{}
+	factory := connectionFactory{}
 	listener, err := net.Listen("tcp", *serverIP+":"+strconv.Itoa(*serverPort))
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Println("LISTENING ON", listener.Addr())
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Print(err)
 			continue
 		}
-		handler := factory.NewHandler(conn)
-		go handler.Handle()
+		handler := factory.newHandler(conn)
+		go handler.handle()
 	}
 }
