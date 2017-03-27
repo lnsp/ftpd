@@ -143,7 +143,16 @@ var (
 	}
 )
 
-func handleConn(conn net.Conn) {
+type Connection struct {
+	net.Conn
+	ID int
+}
+
+func (conn *Connection) log(params ...interface{}) {
+	log.Printf("[#%d] %s", conn.ID, fmt.Sprintln(params...))
+}
+
+func handleConn(conn *Connection) {
 	defer conn.Close()
 	sendResponse(conn, statusServiceReady)
 	var (
@@ -166,7 +175,7 @@ func handleConn(conn net.Conn) {
 		cmdName := strings.ToUpper(cmdTokens[0])
 		cmdData := strings.Join(cmdTokens[1:], " ")
 
-		log.Println("REQUEST", cmdName, cmdData)
+		conn.log("REQUEST", cmdName, cmdData)
 
 		switch cmdName {
 		case commandUser:
@@ -262,13 +271,13 @@ func buildResponse(status int, params ...interface{}) string {
 	return fmt.Sprintf("%d %s\n", status, resp)
 }
 
-func sendResponse(out io.Writer, status int, params ...interface{}) error {
+func sendResponse(conn *Connection, status int, params ...interface{}) error {
 	response := fmt.Sprintf("%d %s\r\n", status, fmt.Sprintf(statusMessages[status], params...))
-	_, err := io.WriteString(out, response)
+	_, err := io.WriteString(conn, response)
 	if err != nil {
 		return err
 	}
-	log.Println("RESPONSE", strings.TrimSpace(response))
+	conn.log("RESPONSE", strings.TrimSpace(response))
 	return nil
 }
 
@@ -282,7 +291,7 @@ func joinPath(p1, p2 string) string {
 	return p1
 }
 
-func transfer(conn net.Conn, data []byte, dataChannel chan []byte, statusChannel chan error) {
+func transfer(conn *Connection, data []byte, dataChannel chan []byte, statusChannel chan error) {
 	sendResponse(conn, statusTransferReady)
 	dataChannel <- data
 	err := <-statusChannel
@@ -400,18 +409,19 @@ func buildEPLFListing(dir string) ([]byte, error) {
 
 func main() {
 	flag.Parse()
-
 	listener, err := net.Listen("tcp", *serverIP+":"+strconv.Itoa(*serverPort))
 	if err != nil {
 		log.Fatal(err)
 	}
-
+	connectionIndex := 0
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Print(err)
 			continue
 		}
-		go handleConn(conn)
+		log.Printf("NEW CONNECTION #%d (%s)\n", connectionIndex, conn.RemoteAddr())
+		go handleConn(&Connection{conn, connectionIndex})
+		connectionIndex++
 	}
 }
