@@ -20,21 +20,48 @@ import (
 )
 
 const (
-	statusSyntaxError      = 500
-	statusServiceReady     = 220
-	statusSystemType       = 215
-	statusAuthenticated    = 230
-	statusNotImplemented   = 502
-	statusWorkingDirectory = 257
+	statusRestartMarker   = 110
+	statusServiceNotReady = 120
+	statusTransferReady   = 125
+	statusTransferStart   = 150
+
 	statusOK               = 200
-	statusTransferReady    = 125
-	statusTransferStart    = 150
-	statusTransferDone     = 226
-	statusTransferAbort    = 426
-	statusPassiveMode      = 227
-	statusActionError      = 250
-	statusFileUnavailable  = 550
+	statusNotImplementedOK = 202
+	statusSystemInfo       = 211
+	statusDirectoryInfo    = 212
 	statusFileInfo         = 213
+	statusHelpInfo         = 214
+	statusSystemType       = 215
+	statusServiceReady     = 220
+	statusCloseConnection  = 221
+	statusTransferOpen     = 225
+	statusTransferDone     = 226
+	statusPassiveMode      = 227
+	statusAuthenticated    = 230
+	statusActionDone       = 250
+	statusWorkingDirectory = 257
+
+	statusNeedPassword = 331
+	statusNeedAccount  = 332
+	statusNeedMoreInfo = 350
+
+	statusServiceUnavailable = 421
+	statusTransferFailed     = 425
+	statusTransferAbort      = 426
+	statusActionNotTaken     = 450
+	statusLocalError         = 451
+	statusInsufficientSpace  = 452
+
+	statusSyntaxError            = 500
+	statusSyntaxParamError       = 501
+	statusNotImplemented         = 502
+	statusBadSequence            = 503
+	statusNotImplementedParam    = 504
+	statusNotLoggedIn            = 530
+	statusStorageAccountRequired = 532
+	statusUnknownPage            = 551
+	statusInsufficientSpaceAbort = 552
+	statusInvalidName            = 553
 
 	commandQuit             = "QUIT"
 	commandUser             = "USER"
@@ -63,20 +90,47 @@ var (
 	serverIP           = flag.String("ip", "127.0.0.1", "Set the public server IP")
 	serverSystemName   = flag.String("system", "UNIX", "Set the public system name")
 	statusMessages     = map[int]string{
-		statusSyntaxError:      "Syntax error",
-		statusServiceReady:     "FTP Service ready",
-		statusAuthenticated:    "User logged in, proceed",
-		statusSystemType:       "%s Type: %s",
-		statusNotImplemented:   "Command not implemented",
-		statusWorkingDirectory: "\"%s\" is working directory.",
+		statusRestartMarker:   "Restart marker reply",
+		statusServiceNotReady: "Service ready in %d minutes",
+		statusTransferReady:   "Data connection already open; transfer starting",
+		statusTransferStart:   "Opening data connection",
+
 		statusOK:               "%s",
-		statusTransferReady:    "Data connection already open; transfer starting",
-		statusTransferStart:    "Opening data connection",
-		statusTransferDone:     "Closing data connection",
-		statusTransferAbort:    "Connection closed; transfer aborted",
-		statusPassiveMode:      "Entering Passive Mode (%s)",
-		statusFileUnavailable:  "File is unavailable",
+		statusNotImplementedOK: "Command not implemented",
+		statusSystemInfo:       "%s",
+		statusDirectoryInfo:    "%s",
 		statusFileInfo:         "%s",
+		statusHelpInfo:         "%s",
+		statusSystemType:       "%s Type: %s",
+		statusServiceReady:     "FTP Service ready",
+		statusCloseConnection:  "Service closing control connection",
+		statusTransferOpen:     "Data connection open; no transfer in progress",
+		statusTransferDone:     "Closing data connection",
+		statusPassiveMode:      "Entering Passive Mode (%s)",
+		statusAuthenticated:    "User logged in, proceed",
+		statusActionDone:       "Requested file action okay, completed",
+		statusWorkingDirectory: "\"%s\" is working directory.",
+
+		statusNeedPassword: "User name okay, need password",
+		statusNeedAccount:  "Need account for login",
+		statusNeedMoreInfo: "Requested file action pending further information",
+
+		statusServiceUnavailable: "Service not available, closing control connection",
+		statusTransferFailed:     "Can't open data connection",
+		statusTransferAbort:      "Connection closed; transfer aborted",
+		statusActionNotTaken:     "Requested file action not taken; file unavailable",
+		statusLocalError:         "Reqzested action aborted; local error in processing",
+		statusInsufficientSpace:  "Requested action not taken; insufficient storage space in system",
+
+		statusSyntaxError:            "Syntax error",
+		statusSyntaxParamError:       "Syntax error in parameters or arguments",
+		statusNotImplemented:         "Command not implemented",
+		statusBadSequence:            "Bad sequence of commands",
+		statusNotImplementedParam:    "Command not implemented for that parameter",
+		statusNotLoggedIn:            "Not logged in",
+		statusStorageAccountRequired: "Need account for storing files",
+		statusUnknownPage:            "Requested action aborted; page type unknown",
+		statusInvalidName:            "Requested action not taken; file name not allowed",
 	}
 	transferTypes = map[rune]string{
 		'A': "ASCII",
@@ -131,28 +185,28 @@ func handleConn(conn net.Conn) {
 			encodedType := encodeTransferType(transferType)
 			if encodedType == "INVALID" {
 				transferType = defaultTransferType
-				sendResponse(conn, statusActionError)
+				sendResponse(conn, statusSyntaxParamError)
 				break
 			}
 			sendResponse(conn, statusOK, "TYPE set to "+encodedType)
 		case commandModificationTime:
 			info, err := os.Stat(joinPath(dir, cmdData))
 			if err != nil {
-				sendResponse(conn, statusFileUnavailable)
+				sendResponse(conn, statusActionNotTaken)
 				break
 			}
 			sendResponse(conn, statusFileInfo, info.ModTime().Format(modTimeFormat))
 		case commandFileSize:
 			info, err := os.Stat(joinPath(dir, cmdData))
 			if err != nil {
-				sendResponse(conn, statusFileUnavailable)
+				sendResponse(conn, statusActionNotTaken)
 				break
 			}
 			sendResponse(conn, statusFileInfo, strconv.FormatInt(info.Size(), 10))
 		case commandRetrieveFile:
 			buffer, err := ioutil.ReadFile(joinPath(dir, cmdData))
 			if err != nil {
-				sendResponse(conn, statusActionError)
+				sendResponse(conn, statusActionNotTaken)
 				break
 			}
 			transfer(conn, buffer, dataChannel, statusChannel)
@@ -167,7 +221,7 @@ func handleConn(conn net.Conn) {
 			cmd := exec.Command("/bin/ls", "-1", dir)
 			output, err := cmd.Output()
 			if err != nil {
-				sendResponse(conn, statusActionError)
+				sendResponse(conn, statusLocalError)
 				break
 			}
 			transfer(conn, encodeText(output, transferType), dataChannel, statusChannel)
@@ -176,7 +230,7 @@ func handleConn(conn net.Conn) {
 			if *enableEPLF {
 				output, err := buildEPLFListing(dir)
 				if err != nil {
-					sendResponse(conn, statusActionError)
+					sendResponse(conn, statusLocalError)
 					break
 				}
 				buffer = output
@@ -184,7 +238,7 @@ func handleConn(conn net.Conn) {
 				cmd := exec.Command("/bin/ls", "-l", dir)
 				output, err := cmd.Output()
 				if err != nil {
-					sendResponse(conn, statusActionError)
+					sendResponse(conn, statusLocalError)
 					break
 				}
 				buffer = encodeText(output, transferType)
