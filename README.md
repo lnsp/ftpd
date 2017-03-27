@@ -1,7 +1,7 @@
 ftpd
 =========
 
-**ftpd** is a simple FTP server implementation.
+**ftpd** is a FTP server implementation in Go. It does not support user authentication and restrictions yet.
 
 ## License
 
