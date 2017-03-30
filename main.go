@@ -143,10 +143,10 @@ func HandleUser(conn ftp.FTPConnection) {
 			passiveHost := *serverIP + ":" + strconv.Itoa(*serverPassiveBase+rand.Intn(*serverPassiveRange))
 			conn.Reset()
 			conn.SetPassive(passiveHost)
-			ftp.SendResponse(conn, ftp.StatusPassiveMode, generateFTPHost(passiveHost))
+			ftp.SendResponse(conn, ftp.StatusPassiveMode, ftp.GenerateHost(passiveHost))
 		case ftp.CommandPort:
 			conn.Reset()
-			conn.SetActive(parseFTPHost(cmdData))
+			conn.SetActive(ftp.ParseHost(cmdData))
 			ftp.SendResponse(conn, ftp.StatusOK, "PORT ftp.Command successfull")
 		case ftp.CommandListRaw:
 			cmd := exec.Command("/bin/ls", "-1", conn.GetDir())
@@ -186,22 +186,6 @@ func HandleUser(conn ftp.FTPConnection) {
 
 func encodeText(text []byte, mode string) []byte {
 	return []byte(strings.Replace(string(text), "\n", "\r\n", -1))
-}
-
-func parseFTPHost(ports string) string {
-	tokens := strings.Split(ports, ",")
-	host := strings.Join(tokens[:4], ".")
-	base1, _ := strconv.Atoi(tokens[4])
-	base0, _ := strconv.Atoi(tokens[5])
-	port := strconv.Itoa(base1*256 + base0)
-	return host + ":" + port
-}
-
-func generateFTPHost(hostport string) string {
-	tokens := strings.Split(hostport, ":")
-	ips := strings.Split(tokens[0], ".")
-	port, _ := strconv.Atoi(tokens[1])
-	return fmt.Sprintf("%s,%d,%d", strings.Join(ips, ","), port/256, port%256)
 }
 
 func encodeTransferType(tt string) string {

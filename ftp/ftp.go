@@ -2,6 +2,7 @@ package ftp
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/lnsp/ftpd/config"
@@ -146,4 +147,20 @@ func SendResponse(conn FTPConnection, status int, params ...interface{}) error {
 	}
 	conn.Log("RESPONSE", strings.TrimSpace(response))
 	return nil
+}
+
+func ParseHost(ports string) string {
+	tokens := strings.Split(ports, ",")
+	host := strings.Join(tokens[:4], ".")
+	base1, _ := strconv.Atoi(tokens[4])
+	base0, _ := strconv.Atoi(tokens[5])
+	port := strconv.Itoa(base1*256 + base0)
+	return host + ":" + port
+}
+
+func GenerateHost(hostport string) string {
+	tokens := strings.Split(hostport, ":")
+	ips := strings.Split(tokens[0], ".")
+	port, _ := strconv.Atoi(tokens[1])
+	return fmt.Sprintf("%s,%d,%d", strings.Join(ips, ","), port/256, port%256)
 }
