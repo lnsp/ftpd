@@ -124,6 +124,7 @@ type FTPConnection interface {
 	GetDir() string
 	ChangeDir(to string) bool
 	GetUser() string
+	ChangeUser(to string)
 	GetTransferType() string
 	ChangeTransferType(string)
 	Send([]byte) bool

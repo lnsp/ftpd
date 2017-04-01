@@ -46,8 +46,10 @@ var (
 	}
 )
 
-func HandleUser(conn ftp.FTPConnection) {
+func HandleUser(conn ftp.FTPConnection, cfg config.FTPUserConfig) {
 	defer conn.Close()
+
+	var selectedUser string
 	ftp.SendResponse(conn, ftp.StatusServiceReady)
 	for {
 		rawRequest, err := conn.ReadCommand()
@@ -64,11 +66,33 @@ func HandleUser(conn ftp.FTPConnection) {
 
 		conn.Log("REQUEST", cmdName, cmdData)
 
+		if conn.GetUser() == "" && cmdName != ftp.CommandUser && cmdName != ftp.CommandPassword {
+			ftp.SendResponse(conn, ftp.StatusNeedAccount)
+			continue
+		}
+
 		switch cmdName {
 		case ftp.CommandUser:
-			ftp.SendResponse(conn, ftp.StatusAuthenticated)
+			if user := cfg.FindUser(cmdData); user != nil {
+				ftp.SendResponse(conn, ftp.StatusNeedPassword)
+				selectedUser = cmdData
+			} else {
+				ftp.SendResponse(conn, ftp.StatusNotLoggedIn)
+			}
 		case ftp.CommandPassword:
-			ftp.SendResponse(conn, ftp.StatusAuthenticated)
+			if user := cfg.FindUser(selectedUser); user != nil {
+				if user.Auth(cmdData) {
+					ftp.SendResponse(conn, ftp.StatusAuthenticated)
+					conn.ChangeUser(selectedUser)
+					conn.ChangeDir(user.HomeDir())
+					conn.Log("AUTH SUCCESS FOR USER", selectedUser)
+				} else {
+					conn.Log("AUTH FAILED FOR USER", selectedUser)
+					ftp.SendResponse(conn, ftp.StatusNeedPassword)
+				}
+			} else {
+				ftp.SendResponse(conn, ftp.StatusNeedAccount)
+			}
 		case ftp.CommandSystemType:
 			ftp.SendResponse(conn, ftp.StatusSystemType, *serverSystemName, encodeTransferType(defaultTransferType))
 		case ftp.CommandPrintDirectory:
@@ -147,7 +171,7 @@ func HandleUser(conn ftp.FTPConnection) {
 		case ftp.CommandPort:
 			conn.Reset()
 			conn.SetActive(ftp.ParseHost(cmdData))
-			ftp.SendResponse(conn, ftp.StatusOK, "PORT ftp.Command successfull")
+			ftp.SendResponse(conn, ftp.StatusOK, "PORT Command successfull")
 		case ftp.CommandListRaw:
 			cmd := exec.Command("/bin/ls", "-1", conn.GetDir())
 			output, err := cmd.Output()
@@ -169,6 +193,7 @@ func HandleUser(conn ftp.FTPConnection) {
 				cmd := exec.Command("/bin/ls", "-l", conn.GetDir())
 				output, err := cmd.Output()
 				if err != nil {
+					conn.Log("FATAL ERROR", err, "WHILE RUNNING", "/bin/ls", "-l", conn.GetDir())
 					ftp.SendResponse(conn, ftp.StatusLocalError)
 					break
 				}
@@ -254,12 +279,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	log.Println(cfg)
 	for {
 		conn, err := factory.Accept(cfg)
 		if err != nil {
 			log.Print(err)
 			continue
 		}
-		go HandleUser(conn)
+		go HandleUser(conn, cfg)
 	}
 }

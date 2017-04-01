@@ -43,6 +43,10 @@ func (conn *TCPConnection) GetUser() string {
 	return conn.User
 }
 
+func (conn *TCPConnection) ChangeUser(to string) {
+	conn.User = to
+}
+
 func (conn *TCPConnection) ChangeDir(dir string) bool {
 	conn.Dir = dir
 	return true
@@ -88,7 +92,7 @@ func (conn *TCPConnection) GetRelativePath(p2 string) (string, bool) {
 		p1 = filepath.Join(p1, p2)
 	}
 	p1, _ = filepath.Abs(p1)
-	rel, err := filepath.Rel(conn.Config.GetUser(conn.User).HomeDir(), p1)
+	rel, err := filepath.Rel(conn.Config.FindUser(conn.User).HomeDir(), p1)
 	if err != nil {
 		return conn.Dir, false
 	}
@@ -233,8 +237,8 @@ func (fac *TCPConnectionFactory) Accept(cfg config.FTPUserConfig) (FTPConnection
 		Mode:         make(chan bool),
 		Data:         make(chan []byte),
 		Status:       make(chan error),
-		Dir:          cfg.GetUser("anonymous").HomeDir(),
-		User:         "anonymous",
+		Dir:          "/tmp",
+		User:         "",
 		TransferType: "AN",
 		Config:       cfg,
 	}, nil
