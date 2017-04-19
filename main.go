@@ -50,7 +50,7 @@ func HandleUser(conn ftp.FTPConnection, cfg config.FTPUserConfig) {
 	defer conn.Close()
 
 	var selectedUser string
-	ftp.SendResponse(conn, ftp.StatusServiceReady)
+	conn.Respond(ftp.StatusServiceReady)
 	for {
 		rawRequest, err := conn.ReadCommand()
 		if err != nil {
@@ -58,7 +58,7 @@ func HandleUser(conn ftp.FTPConnection, cfg config.FTPUserConfig) {
 		}
 		cmdTokens := strings.Split(rawRequest, " ")
 		if len(cmdTokens) < 1 {
-			ftp.SendResponse(conn, ftp.StatusSyntaxError)
+			conn.Respond(ftp.StatusSyntaxError)
 			continue
 		}
 		cmdName := strings.ToUpper(cmdTokens[0])
@@ -67,92 +67,103 @@ func HandleUser(conn ftp.FTPConnection, cfg config.FTPUserConfig) {
 		conn.Log("REQUEST", cmdName, cmdData)
 
 		if conn.GetUser() == "" && cmdName != ftp.CommandUser && cmdName != ftp.CommandPassword {
-			ftp.SendResponse(conn, ftp.StatusNeedAccount)
+			conn.Respond(ftp.StatusNeedAccount)
 			continue
 		}
 
 		switch cmdName {
 		case ftp.CommandUser:
 			if user := cfg.FindUser(cmdData); user != nil {
-				ftp.SendResponse(conn, ftp.StatusNeedPassword)
+				conn.Respond(ftp.StatusNeedPassword)
 				selectedUser = cmdData
 			} else {
-				ftp.SendResponse(conn, ftp.StatusNotLoggedIn)
+				conn.Respond(ftp.StatusNotLoggedIn)
 			}
 		case ftp.CommandPassword:
 			if user := cfg.FindUser(selectedUser); user != nil {
 				if user.Auth(cmdData) {
-					ftp.SendResponse(conn, ftp.StatusAuthenticated)
+					conn.Respond(ftp.StatusAuthenticated)
 					conn.ChangeUser(selectedUser)
 					conn.ChangeDir(user.HomeDir())
 					conn.Log("AUTH SUCCESS FOR USER", selectedUser)
 				} else {
 					conn.Log("AUTH FAILED FOR USER", selectedUser)
-					ftp.SendResponse(conn, ftp.StatusNeedPassword)
+					conn.Respond(ftp.StatusNeedPassword)
 				}
 			} else {
-				ftp.SendResponse(conn, ftp.StatusNeedAccount)
+				conn.Respond(ftp.StatusNeedAccount)
 			}
 		case ftp.CommandSystemType:
-			ftp.SendResponse(conn, ftp.StatusSystemType, *serverSystemName, encodeTransferType(defaultTransferType))
+			conn.Respond(ftp.StatusSystemType, *serverSystemName, encodeTransferType(defaultTransferType))
 		case ftp.CommandPrintDirectory:
-			ftp.SendResponse(conn, ftp.StatusWorkingDirectory, conn.GetDir())
+			user := cfg.FindUser(selectedUser)
+			dir := conn.GetDir()
+			if !user.Group().CanListDir(dir) {
+				conn.Respond(ftp.StatusActionNotTaken)
+				break
+			}
+			conn.Respond(ftp.StatusWorkingDirectory, dir)
 		case ftp.CommandChangeDirectory:
 			path, ok := conn.GetRelativePath(cmdData)
 			if !ok {
-				ftp.SendResponse(conn, ftp.StatusActionNotTaken)
+				conn.Respond(ftp.StatusActionNotTaken)
 				break
 			}
 			conn.ChangeDir(path)
-			ftp.SendResponse(conn, ftp.StatusWorkingDirectory, conn.GetDir())
+			conn.Respond(ftp.StatusWorkingDirectory, conn.GetDir())
 		case ftp.CommandDataType:
 			encodedType := encodeTransferType(cmdData)
 			if encodedType == "INVALID" {
-				ftp.SendResponse(conn, ftp.StatusSyntaxParamError)
+				conn.Respond(ftp.StatusSyntaxParamError)
 				break
 			}
 			conn.ChangeTransferType(cmdData)
-			ftp.SendResponse(conn, ftp.StatusOK, "TYPE set to "+encodedType)
+			conn.Respond(ftp.StatusOK, "TYPE set to "+encodedType)
 		case ftp.CommandModificationTime:
 			path, ok := conn.GetRelativePath(cmdData)
 			if !ok {
-				ftp.SendResponse(conn, ftp.StatusActionNotTaken)
+				conn.Respond(ftp.StatusActionNotTaken)
 				break
 			}
 			info, err := os.Stat(path)
 			if err != nil {
-				ftp.SendResponse(conn, ftp.StatusActionNotTaken)
+				conn.Respond(ftp.StatusActionNotTaken)
 				break
 			}
-			ftp.SendResponse(conn, ftp.StatusFileInfo, info.ModTime().Format(modTimeFormat))
+			conn.Respond(ftp.StatusFileInfo, info.ModTime().Format(modTimeFormat))
 		case ftp.CommandFileSize:
 			path, ok := conn.GetRelativePath(cmdData)
 			if !ok {
-				ftp.SendResponse(conn, ftp.StatusActionNotTaken)
+				conn.Respond(ftp.StatusActionNotTaken)
 				break
 			}
 			info, err := os.Stat(path)
 			if err != nil {
-				ftp.SendResponse(conn, ftp.StatusActionNotTaken)
+				conn.Respond(ftp.StatusActionNotTaken)
 				break
 			}
-			ftp.SendResponse(conn, ftp.StatusFileInfo, strconv.FormatInt(info.Size(), 10))
+			conn.Respond(ftp.StatusFileInfo, strconv.FormatInt(info.Size(), 10))
 		case ftp.CommandRetrieveFile:
 			path, ok := conn.GetRelativePath(cmdData)
 			if !ok {
-				ftp.SendResponse(conn, ftp.StatusActionNotTaken)
+				conn.Respond(ftp.StatusActionNotTaken)
 				break
 			}
 			buffer, err := ioutil.ReadFile(path)
 			if err != nil {
-				ftp.SendResponse(conn, ftp.StatusActionNotTaken)
+				conn.Respond(ftp.StatusActionNotTaken)
 				break
 			}
 			conn.Send(buffer)
 		case ftp.CommandStoreFile:
 			path, ok := conn.GetRelativePath(cmdData)
 			if !ok {
-				ftp.SendResponse(conn, ftp.StatusActionNotTaken)
+				conn.Respond(ftp.StatusActionNotTaken)
+				break
+			}
+			user := cfg.FindUser(selectedUser)
+			if !user.Group().CanCreateFile(path) {
+				conn.Respond(ftp.StatusActionNotTaken)
 				break
 			}
 			data, success := conn.Receive()
@@ -160,32 +171,44 @@ func HandleUser(conn ftp.FTPConnection, cfg config.FTPUserConfig) {
 				break
 			}
 			if err := ioutil.WriteFile(path, data, 0644); err != nil {
-				ftp.SendResponse(conn, ftp.StatusActionNotTaken)
+				conn.Respond(ftp.StatusActionNotTaken)
 				break
 			}
 		case ftp.CommandPassiveMode:
 			passiveHost := *serverIP + ":" + strconv.Itoa(*serverPassiveBase+rand.Intn(*serverPassiveRange))
 			conn.Reset()
 			conn.SetPassive(passiveHost)
-			ftp.SendResponse(conn, ftp.StatusPassiveMode, ftp.GenerateHost(passiveHost))
+			conn.Respond(ftp.StatusPassiveMode, ftp.GenerateHost(passiveHost))
 		case ftp.CommandPort:
 			conn.Reset()
 			conn.SetActive(ftp.ParseHost(cmdData))
-			ftp.SendResponse(conn, ftp.StatusOK, "PORT Command successfull")
+			conn.Respond(ftp.StatusOK, "PORT Command successfull")
 		case ftp.CommandListRaw:
+			user := cfg.FindUser(selectedUser)
+			if !user.Group().CanListDir(conn.GetDir()) {
+				conn.Respond(ftp.StatusActionNotTaken)
+				break
+			}
 			cmd := exec.Command("/bin/ls", "-1", conn.GetDir())
 			output, err := cmd.Output()
 			if err != nil {
-				ftp.SendResponse(conn, ftp.StatusLocalError)
+				conn.Log("ERROR", err, "WHILE RUNNING", cmd)
+				conn.Respond(ftp.StatusLocalError)
 				break
 			}
 			conn.Send(encodeText(output, conn.GetTransferType()))
 		case ftp.CommandList:
+			user := cfg.FindUser(selectedUser)
+			if !user.Group().CanListDir(conn.GetDir()) {
+				conn.Respond(ftp.StatusActionNotTaken)
+				break
+			}
 			var buffer []byte
 			if *enableEPLF {
 				output, err := buildEPLFListing(conn.GetDir())
 				if err != nil {
-					ftp.SendResponse(conn, ftp.StatusLocalError)
+					conn.Log("ERROR", err, "WHILE RUNNING EPLF LISTING")
+					conn.Respond(ftp.StatusLocalError)
 					break
 				}
 				buffer = output
@@ -193,18 +216,18 @@ func HandleUser(conn ftp.FTPConnection, cfg config.FTPUserConfig) {
 				cmd := exec.Command("/bin/ls", "-l", conn.GetDir())
 				output, err := cmd.Output()
 				if err != nil {
-					conn.Log("FATAL ERROR", err, "WHILE RUNNING", "/bin/ls", "-l", conn.GetDir())
-					ftp.SendResponse(conn, ftp.StatusLocalError)
+					conn.Log("ERROR", err, "WHILE RUNNING", cmd)
+					conn.Respond(ftp.StatusLocalError)
 					break
 				}
 				buffer = encodeText(output, conn.GetTransferType())
 			}
 			conn.Send(buffer)
 		case ftp.CommandQuit:
-			ftp.SendResponse(conn, ftp.StatusOK, "Connection closing")
+			conn.Respond(ftp.StatusOK, "Connection closing")
 			return
 		default:
-			ftp.SendResponse(conn, ftp.StatusNotImplemented)
+			conn.Respond(ftp.StatusNotImplemented)
 		}
 	}
 }
@@ -280,7 +303,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Println(cfg)
 	for {
 		conn, err := factory.Accept(cfg)
 		if err != nil {

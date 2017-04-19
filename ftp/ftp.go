@@ -2,6 +2,8 @@ package ftp
 
 import (
 	"fmt"
+	"log"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -133,6 +135,7 @@ type FTPConnection interface {
 	SetPassive(string)
 	SetActive(string)
 	Reset()
+	Respond(int, ...interface{}) error
 }
 
 type FTPConnectionFactory interface {
@@ -140,16 +143,63 @@ type FTPConnectionFactory interface {
 	Accept(cfg config.FTPUserConfig) (FTPConnection, error)
 }
 
-func SendResponse(conn FTPConnection, status int, params ...interface{}) error {
-	response := fmt.Sprintf("%d %s\r\n", status, fmt.Sprintf(StatusMessages[status], params...))
-	err := conn.Write([]byte(response))
-	if err != nil {
-		return err
-	}
-	conn.Log("RESPONSE", strings.TrimSpace(response))
-	return nil
+type basicFTPConnection struct {
+	ID           int
+	Dir          string
+	User         string
+	TransferType string
+	Config       config.FTPUserConfig
 }
 
+func (conn *basicFTPConnection) GetID() int {
+	return conn.ID
+}
+
+func (conn *basicFTPConnection) GetDir() string {
+	return conn.Dir
+}
+
+func (conn *basicFTPConnection) GetUser() string {
+	return conn.User
+}
+
+func (conn *basicFTPConnection) ChangeUser(to string) {
+	conn.User = to
+}
+
+func (conn *basicFTPConnection) ChangeDir(dir string) bool {
+	conn.Dir = dir
+	return true
+}
+func (conn *basicFTPConnection) GetTransferType() string {
+	return conn.TransferType
+}
+
+func (conn *basicFTPConnection) ChangeTransferType(tt string) {
+	conn.TransferType = tt
+}
+
+func (conn *basicFTPConnection) Log(params ...interface{}) {
+	log.Printf("[#%d] %s", conn.ID, fmt.Sprintln(params...))
+}
+
+func (conn *basicFTPConnection) GetRelativePath(p2 string) (string, bool) {
+	p1 := conn.Dir
+	if filepath.IsAbs(p2) {
+		p1 = p2
+	} else {
+		p1 = filepath.Join(p1, p2)
+	}
+	p1, _ = filepath.Abs(p1)
+	rel, err := filepath.Rel(conn.Config.FindUser(conn.User).HomeDir(), p1)
+	if err != nil {
+		return conn.Dir, false
+	}
+	if strings.Contains(rel, "..") {
+		return conn.Dir, false
+	}
+	return p1, true
+}
 func ParseHost(ports string) string {
 	tokens := strings.Split(ports, ",")
 	host := strings.Join(tokens[:4], ".")
