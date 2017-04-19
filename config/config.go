@@ -15,9 +15,12 @@ type FTPUser interface {
 }
 
 type FTPGroup interface {
-	CanCreate(path string) bool
-	CanHandle(path string) bool
-	CanDelete(path string) bool
+	CanCreateFile(path string) bool
+	CanCreateDir(path string) bool
+	CanEditFile(path string) bool
+	CanListDir(path string) bool
+	CanDeleteFile(path string) bool
+	CanDeleteDir(path string) bool
 }
 
 type FTPUserConfig interface {
@@ -52,15 +55,27 @@ func (cfg *defaultUserConfiguration) Group() FTPGroup {
 	return cfg
 }
 
-func (cfg *defaultUserConfiguration) CanCreate(path string) bool {
+func (cfg *defaultUserConfiguration) CanCreateFile(path string) bool {
 	return true
 }
 
-func (cfg *defaultUserConfiguration) CanHandle(path string) bool {
+func (cfg *defaultUserConfiguration) CanEditFile(path string) bool {
 	return true
 }
 
-func (cfg *defaultUserConfiguration) CanDelete(path string) bool {
+func (cfg *defaultUserConfiguration) CanDeleteFile(path string) bool {
+	return true
+}
+
+func (cfg *defaultUserConfiguration) CanCreateDir(path string) bool {
+	return true
+}
+
+func (cfg *defaultUserConfiguration) CanListDir(path string) bool {
+	return true
+}
+
+func (cfg *defaultUserConfiguration) CanDeleteDir(path string) bool {
 	return true
 }
 
@@ -128,6 +143,60 @@ func (cfg *yamlUserConfiguration) FindGroup(name string) FTPGroup {
 		return nil
 	}
 	return &group
+}
+
+func (group *yamlGroupEntry) CanCreateFile(path string) bool {
+	for _, key := range group.CreateFlags {
+		if key == "file" {
+			return true
+		}
+	}
+	return false
+}
+
+func (group *yamlGroupEntry) CanCreateDir(path string) bool {
+	for _, key := range group.CreateFlags {
+		if key == "dir" {
+			return true
+		}
+	}
+	return false
+}
+
+func (group *yamlGroupEntry) CanListDir(path string) bool {
+	for _, key := range group.HandleFlags {
+		if key == "dir" {
+			return true
+		}
+	}
+	return false
+}
+
+func (group *yamlGroupEntry) CanEditFile(path string) bool {
+	for _, key := range group.HandleFlags {
+		if key == "file" {
+			return true
+		}
+	}
+	return false
+}
+
+func (group *yamlGroupEntry) CanDeleteFile(path string) bool {
+	for _, key := range group.DeleteFlags {
+		if key == "file" {
+			return true
+		}
+	}
+	return false
+}
+
+func (group *yamlGroupEntry) CanDeleteDir(path string) bool {
+	for _, key := range group.DeleteFlags {
+		if key == "dir" {
+			return true
+		}
+	}
+	return false
 }
 
 func NewYAMLConfig(file string, rewrite bool) (FTPUserConfig, error) {
