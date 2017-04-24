@@ -260,6 +260,7 @@ func encodeTransferType(tt string) string {
 
 func buildEPLFListing(dir string) ([]byte, error) {
 	// This IS DIRTY. Does not work on Windows.
+	// TODO: REWORK THIS METHOD
 	output := ""
 	directory, err := ioutil.ReadDir(dir)
 	if err != nil {
