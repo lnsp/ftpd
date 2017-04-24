@@ -10,12 +10,19 @@ import (
 	"github.com/lnsp/ftpd/config"
 )
 
-// FTP Status Codes
-// 100 - 199: Success, waiting for further commands
-// 200 - 299: Successful execution
-// 300 - 399: Success, waiting for further commands to conclude action
-// 400 - 499: Command not executed, temporary problem
-// 500 - 599: Command not executed, persistent problem
+/*
+FTP Status Codes
+
+100 - 199: Success, waiting for further commands
+
+200 - 299: Successful execution
+
+300 - 399: Success, waiting for further commands to conclude action
+
+400 - 499: Command not executed, temporary problem
+
+500 - 599: Command not executed, persistent problem
+*/
 const (
 	StatusRestartMarker   = 110
 	StatusServiceNotReady = 120
