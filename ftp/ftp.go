@@ -99,7 +99,7 @@ var (
 		StatusFileInfo:         "%s",
 		StatusHelpInfo:         "%s",
 		StatusSystemType:       "%s Type: %s",
-		StatusServiceReady:     "FTP Service ready",
+		StatusServiceReady:     "%s",
 		StatusCloseConnection:  "Service closing control connection",
 		StatusTransferOpen:     "Data connection open; no transfer in progress",
 		StatusTransferDone:     "Closing data connection",

@@ -1,5 +1,8 @@
-// Copyright 2017 Lennart Espe <lennart@espe.tech>
-// All rights reserved.
+/*
+Easy-to-setup FTP server with user auth, EPLF directory listings and support for passive / active mode.
+
+Copyright 2017 Lennart Espe <lennart.espe@tech>. All rights reserved.
+*/
 package main
 
 import (
@@ -34,6 +37,7 @@ var (
 	serverPassiveBase  = flag.Int("base", 2122, "Change the passive port base number")
 	serverPassiveRange = flag.Int("range", 1000, "Change the passive port range")
 	serverPort         = flag.Int("port", 2121, "Change the public control port")
+	serverMOTD         = flag.String("motd", "FTP Service ready", "Set the message of the day")
 	serverIP           = flag.String("ip", "127.0.0.1", "Change the public IP")
 	serverSystemName   = flag.String("system", runtime.GOOS, "Change the system name")
 	serverUserConfig   = flag.String("config", "", "Enable a user configuration by file")
@@ -54,7 +58,7 @@ func HandleUser(conn ftp.Conn, cfg config.FTPUserConfig) {
 	defer conn.Close()
 
 	var selectedUser string
-	conn.Respond(ftp.StatusServiceReady)
+	conn.Respond(ftp.StatusServiceReady, *serverMOTD)
 	for {
 		rawRequest, err := conn.ReadCommand()
 		if err != nil {
