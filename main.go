@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/lnsp/ftpd/config"
 	"github.com/lnsp/ftpd/ftp"
@@ -24,6 +25,7 @@ const (
 	modTimeFormat       = "20060102150405"
 	defaultTransferType = "AN"
 	transferBufferSize  = 4096
+	badLoginDelay       = 3 * time.Second
 )
 
 var (
@@ -88,7 +90,8 @@ func HandleUser(conn ftp.FTPConnection, cfg config.FTPUserConfig) {
 					conn.Log("AUTH SUCCESS FOR USER", selectedUser)
 				} else {
 					conn.Log("AUTH FAILED FOR USER", selectedUser)
-					conn.Respond(ftp.StatusNeedPassword)
+					time.Sleep(badLoginDelay)
+					conn.Respond(ftp.StatusNotLoggedIn)
 				}
 			} else {
 				conn.Respond(ftp.StatusNeedAccount)
