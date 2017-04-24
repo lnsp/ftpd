@@ -1,4 +1,4 @@
-package ftp
+package tcp
 
 import (
 	"bufio"
@@ -8,10 +8,11 @@ import (
 	"strings"
 
 	"github.com/lnsp/ftpd/config"
+	"github.com/lnsp/ftpd/ftp"
 )
 
-type TCPConnection struct {
-	basicFTPConnection
+type conn struct {
+	ftp.ContextualConn
 	Backend net.Conn
 	Reader  *bufio.Reader
 	Mode    chan bool
@@ -19,17 +20,17 @@ type TCPConnection struct {
 	Status  chan error
 }
 
-func (conn *TCPConnection) Reset() {
+func (conn *conn) Reset() {
 	conn.Mode = make(chan bool)
 	conn.Data = make(chan []byte)
 	conn.Status = make(chan error)
 }
 
-func (conn *TCPConnection) Close() {
+func (conn *conn) Close() {
 	conn.Backend.Close()
 }
 
-func (conn *TCPConnection) ReadCommand() (string, error) {
+func (conn *conn) ReadCommand() (string, error) {
 	buffer, _, err := conn.Reader.ReadLine()
 	if err != nil {
 		return "", err
@@ -37,7 +38,7 @@ func (conn *TCPConnection) ReadCommand() (string, error) {
 	return strings.TrimSpace(string(buffer)), nil
 }
 
-func (conn *TCPConnection) Write(buffer []byte) error {
+func (conn *conn) Write(buffer []byte) error {
 	_, err := conn.Backend.Write(buffer)
 	if err != nil {
 		return err
@@ -45,108 +46,108 @@ func (conn *TCPConnection) Write(buffer []byte) error {
 	return nil
 }
 
-func (conn *TCPConnection) Receive() ([]byte, bool) {
-	conn.Respond(StatusTransferReady)
+func (conn *conn) Receive() ([]byte, bool) {
+	conn.Respond(ftp.StatusTransferReady)
 	conn.Mode <- true
 	err := <-conn.Status
 	if err != nil {
-		conn.Respond(StatusTransferAbort)
+		conn.Respond(ftp.StatusTransferAbort)
 		return []byte{}, false
 	}
 	data := <-conn.Data
-	conn.Respond(StatusTransferDone)
+	conn.Respond(ftp.StatusTransferDone)
 	return data, true
 }
 
-func (conn *TCPConnection) Send(data []byte) bool {
-	conn.Respond(StatusTransferReady)
+func (conn *conn) Send(data []byte) bool {
+	conn.Respond(ftp.StatusTransferReady)
 	conn.Mode <- false
 	conn.Data <- data
 	err := <-conn.Status
 	if err != nil {
-		conn.Respond(StatusTransferAbort)
+		conn.Respond(ftp.StatusTransferAbort)
 		return false
 	}
-	conn.Respond(StatusTransferDone)
+	conn.Respond(ftp.StatusTransferDone)
 	return true
 }
 
 // SetPassive passively transfers data.
 // It listens on a specific port and waits for a user to connect.
-func (peer *TCPConnection) SetPassive(host string) {
+func (conn *conn) SetPassive(host string) {
 	go func() {
 		listener, err := net.Listen("tcp", host)
 		if err != nil {
-			peer.Status <- err
+			conn.Status <- err
 			return
 		}
 		defer listener.Close()
-		conn, err := listener.Accept()
+		c, err := listener.Accept()
 		if err != nil {
-			peer.Status <- err
+			conn.Status <- err
 			return
 		}
-		defer conn.Close()
+		defer c.Close()
 
-		if <-peer.Mode {
+		if <-conn.Mode {
 			// Receive data passively
-			buffer, err := ioutil.ReadAll(conn)
+			buffer, err := ioutil.ReadAll(c)
 			if err != nil {
-				peer.Status <- err
+				conn.Status <- err
 				return
 			}
-			peer.Status <- nil
-			peer.Data <- buffer
+			conn.Status <- nil
+			conn.Data <- buffer
 		} else {
 			// Send data passively
-			_, err = conn.Write(<-peer.Data)
+			_, err = c.Write(<-conn.Data)
 			if err != nil {
-				peer.Status <- err
+				conn.Status <- err
 				return
 			}
-			peer.Status <- nil
+			conn.Status <- nil
 		}
 	}()
 }
 
 // SetActive actively transfers data.
 // It connects to the target host and reads or writes the data from the buffer channel.
-func (peer *TCPConnection) SetActive(host string) {
+func (conn *conn) SetActive(host string) {
 	go func() {
-		if <-peer.Mode {
-			conn, err := net.Dial("tcp", host)
+		if <-conn.Mode {
+			c, err := net.Dial("tcp", host)
 			if err != nil {
-				peer.Status <- err
+				conn.Status <- err
 				return
 			}
 			defer conn.Close()
-			buffer, err := ioutil.ReadAll(conn)
+			buffer, err := ioutil.ReadAll(c)
 			if err != nil {
-				peer.Status <- err
+				conn.Status <- err
 				return
 			}
-			peer.Status <- nil
-			peer.Data <- buffer
+			conn.Status <- nil
+			conn.Data <- buffer
 		} else {
-			object := <-peer.Data
-			conn, err := net.Dial("tcp", host)
+			object := <-conn.Data
+			c, err := net.Dial("tcp", host)
 			if err != nil {
-				peer.Status <- err
+				conn.Status <- err
 				return
 			}
-			defer conn.Close()
-			_, err = conn.Write(object)
+			defer c.Close()
+			_, err = c.Write(object)
 			if err != nil {
-				peer.Status <- err
+				conn.Status <- err
 				return
 			}
-			peer.Status <- nil
+			conn.Status <- nil
 		}
 	}()
 }
 
-func (conn *TCPConnection) Respond(status int, params ...interface{}) error {
-	response := fmt.Sprintf("%d %s\r\n", status, fmt.Sprintf(StatusMessages[status], params...))
+func (conn *conn) Respond(status int, params ...interface{}) error {
+	response := fmt.Sprintf("%d %s\r\n", status, fmt.Sprintf(ftp.StatusMessages[status], params...))
 	err := conn.Write([]byte(response))
 	if err != nil {
 		return err
@@ -154,21 +155,23 @@ func (conn *TCPConnection) Respond(status int, params ...interface{}) error {
 	conn.Log("RESPONSE", strings.TrimSpace(response))
 	return nil
 }
-func NewTCPConnectionFactory(host string) FTPConnectionFactory {
-	return &TCPConnectionFactory{
+
+// NewFactory instantiates a new TCP connection factory.
+func NewFactory(host string) ftp.ConnectionFactory {
+	return &connectionFactory{
 		listener: nil,
 		hostname: host,
 		index:    0,
 	}
 }
 
-type TCPConnectionFactory struct {
+type connectionFactory struct {
 	listener net.Listener
 	hostname string
 	index    int
 }
 
-func (fac *TCPConnectionFactory) Listen() error {
+func (fac *connectionFactory) Listen() error {
 	listener, err := net.Listen("tcp", fac.hostname)
 	if err != nil {
 		return err
@@ -177,22 +180,22 @@ func (fac *TCPConnectionFactory) Listen() error {
 	return nil
 }
 
-func (fac *TCPConnectionFactory) Accept(cfg config.FTPUserConfig) (FTPConnection, error) {
-	conn, err := fac.listener.Accept()
+func (fac *connectionFactory) Accept(cfg config.FTPUserConfig) (ftp.Conn, error) {
+	c, err := fac.listener.Accept()
 	if err != nil {
 		return nil, err
 	}
 	defer func() { fac.index++ }()
-	return &TCPConnection{
-		basicFTPConnection: basicFTPConnection{
+	return &conn{
+		ContextualConn: ftp.ContextualConn{
 			ID:           fac.index,
 			Dir:          "/tmp",
 			User:         "",
 			TransferType: "AN",
 			Config:       cfg,
 		},
-		Backend: conn,
-		Reader:  bufio.NewReader(conn),
+		Backend: c,
+		Reader:  bufio.NewReader(c),
 		Mode:    make(chan bool),
 		Data:    make(chan []byte),
 		Status:  make(chan error),

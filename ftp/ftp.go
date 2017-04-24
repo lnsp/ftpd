@@ -10,6 +10,12 @@ import (
 	"github.com/lnsp/ftpd/config"
 )
 
+// FTP Status Codes
+// 100 - 199: Success, waiting for further commands
+// 200 - 299: Successful execution
+// 300 - 399: Success, waiting for further commands to conclude action
+// 400 - 499: Command not executed, temporary problem
+// 500 - 599: Command not executed, persistent problem
 const (
 	StatusRestartMarker   = 110
 	StatusServiceNotReady = 120
@@ -72,6 +78,7 @@ const (
 )
 
 var (
+	// StatusMessages maps status codes to response descriptions.
 	StatusMessages = map[int]string{
 		StatusRestartMarker:   "Restart marker reply",
 		StatusServiceNotReady: "Service ready in %d minutes",
@@ -117,7 +124,8 @@ var (
 	}
 )
 
-type FTPConnection interface {
+// Conn handles context related user interactions.
+type Conn interface {
 	Close()
 	ReadCommand() (string, error)
 	Write([]byte) error
@@ -138,12 +146,14 @@ type FTPConnection interface {
 	Respond(int, ...interface{}) error
 }
 
-type FTPConnectionFactory interface {
+// ConnectionFactory waits for connections and matches them to a configuration.
+type ConnectionFactory interface {
 	Listen() error
-	Accept(cfg config.FTPUserConfig) (FTPConnection, error)
+	Accept(cfg config.FTPUserConfig) (Conn, error)
 }
 
-type basicFTPConnection struct {
+// ContextualConn stores FTP session information.
+type ContextualConn struct {
 	ID           int
 	Dir          string
 	User         string
@@ -151,39 +161,49 @@ type basicFTPConnection struct {
 	Config       config.FTPUserConfig
 }
 
-func (conn *basicFTPConnection) GetID() int {
+// GetID retrieves the connection ID.
+func (conn *ContextualConn) GetID() int {
 	return conn.ID
 }
 
-func (conn *basicFTPConnection) GetDir() string {
+// GetDir returns the current working directory.
+func (conn *ContextualConn) GetDir() string {
 	return conn.Dir
 }
 
-func (conn *basicFTPConnection) GetUser() string {
+// GetUser returns the active user.
+func (conn *ContextualConn) GetUser() string {
 	return conn.User
 }
 
-func (conn *basicFTPConnection) ChangeUser(to string) {
+// ChangeUser changes the user to the given name.
+func (conn *ContextualConn) ChangeUser(to string) {
 	conn.User = to
 }
 
-func (conn *basicFTPConnection) ChangeDir(dir string) bool {
+// ChangeDir changes the working directory to the target directory.
+func (conn *ContextualConn) ChangeDir(dir string) bool {
 	conn.Dir = dir
 	return true
 }
-func (conn *basicFTPConnection) GetTransferType() string {
+
+// GetTransferType retrieves the currently selected transfer type.
+func (conn *ContextualConn) GetTransferType() string {
 	return conn.TransferType
 }
 
-func (conn *basicFTPConnection) ChangeTransferType(tt string) {
+// ChangeTransferType selects a new transfer type.
+func (conn *ContextualConn) ChangeTransferType(tt string) {
 	conn.TransferType = tt
 }
 
-func (conn *basicFTPConnection) Log(params ...interface{}) {
+// Log prints out logging information including the connection ID.
+func (conn *ContextualConn) Log(params ...interface{}) {
 	log.Printf("[#%d] %s", conn.ID, fmt.Sprintln(params...))
 }
 
-func (conn *basicFTPConnection) GetRelativePath(p2 string) (string, bool) {
+// GetRelativePath returns the relative path from the current working directory to the target path.
+func (conn *ContextualConn) GetRelativePath(p2 string) (string, bool) {
 	p1 := conn.Dir
 	if filepath.IsAbs(p2) {
 		p1 = p2
@@ -200,6 +220,8 @@ func (conn *basicFTPConnection) GetRelativePath(p2 string) (string, bool) {
 	}
 	return p1, true
 }
+
+// ParseHost converts hostnames and ports between from the FTP to the URI format.
 func ParseHost(ports string) string {
 	tokens := strings.Split(ports, ",")
 	host := strings.Join(tokens[:4], ".")
@@ -209,6 +231,7 @@ func ParseHost(ports string) string {
 	return host + ":" + port
 }
 
+// GenerateHost converts a URI hostport to the FTP format.
 func GenerateHost(hostport string) string {
 	tokens := strings.Split(hostport, ":")
 	ips := strings.Split(tokens[0], ".")

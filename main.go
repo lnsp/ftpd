@@ -19,6 +19,7 @@ import (
 
 	"github.com/lnsp/ftpd/config"
 	"github.com/lnsp/ftpd/ftp"
+	"github.com/lnsp/ftpd/ftp/tcp"
 )
 
 const (
@@ -48,7 +49,8 @@ var (
 	}
 )
 
-func HandleUser(conn ftp.FTPConnection, cfg config.FTPUserConfig) {
+// HandleUser manages a FTP connection by interpreting commands and performing actions.
+func HandleUser(conn ftp.Conn, cfg config.FTPUserConfig) {
 	defer conn.Close()
 
 	var selectedUser string
@@ -235,10 +237,13 @@ func HandleUser(conn ftp.FTPConnection, cfg config.FTPUserConfig) {
 	}
 }
 
+// encodeText converts strings with UNIX style lines to the FTP standard.
 func encodeText(text []byte, mode string) []byte {
 	return []byte(strings.Replace(string(text), "\n", "\r\n", -1))
 }
 
+// encodeTransferType generates a string representation of a transfer type code.
+// e.g. "AN" -> "ASCII Non Print"
 func encodeTransferType(tt string) string {
 	var (
 		baseMode, extMode string
@@ -258,6 +263,7 @@ func encodeTransferType(tt string) string {
 	return fmt.Sprintf("%s %s", baseMode, extMode)
 }
 
+// buildEPLFListing generates a file listing.
 func buildEPLFListing(dir string) ([]byte, error) {
 	// This IS DIRTY. Does not work on Windows.
 	// TODO: REWORK THIS METHOD
@@ -301,7 +307,7 @@ func main() {
 		}
 	}
 
-	factory := ftp.NewTCPConnectionFactory(*serverIP + ":" + strconv.Itoa(*serverPort))
+	factory := tcp.NewFactory(*serverIP + ":" + strconv.Itoa(*serverPort))
 	err := factory.Listen()
 	if err != nil {
 		log.Fatal(err)
