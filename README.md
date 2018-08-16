@@ -1,10 +1,42 @@
 ftpd
 =========
 
-**ftpd** is a FTP server implementation in Go. It does not support user authentication and restrictions yet.
+**ftpd** is a FTP server implementation in Go.
+It does support basic user authentication and access control.
 
-## License
+## Configuration
+Basic configuration like listening address is done using the command-line interface, while advanced user configuration has to be done using YAML files. An example listing can be found below.
 
-Copyright 2017 Lennart Espe. All rights reserved.
-Use of this source code is governed by a MIT-style
-license that can be found in the LICENSE.md file.
+```bash
+echo > users.yaml <<EOF
+users:
+  anonymous:
+    home: /tmp/anonymous
+    hash: ""
+    password: ""
+    group: anonymous
+  espe:
+    home: /home/admin
+    password: "example-password"
+    group: admin
+groups:
+  admin:
+    create:
+    - file
+    - dir
+    handle:
+    - file
+    - dir
+    delete:
+    - file
+    - dir
+  anonymous:
+    create: []
+    handle:
+    - file
+    - dir
+    delete: []
+EOF
+ftpd
+```
+

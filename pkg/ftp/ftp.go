@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lnsp/ftpd/config"
+	"github.com/lnsp/ftpd/pkg/ftp/config"
 )
 
 /*
@@ -135,7 +135,7 @@ var (
 type Conn interface {
 	Close()
 	ReadCommand() (string, error)
-	Write([]byte) error
+	Write([]byte) (int, error)
 	GetID() int
 	GetRelativePath(string) (string, bool)
 	GetDir() string
@@ -143,6 +143,7 @@ type Conn interface {
 	GetUser() string
 	ChangeUser(to string)
 	GetTransferType() string
+	GetPassivePort() (int, error)
 	ChangeTransferType(string)
 	Send([]byte) bool
 	Receive() ([]byte, bool)

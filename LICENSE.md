@@ -1,7 +1,7 @@
 MIT License
 ============
 
-**Copyright (c) 2017 Lennart Espe**
+**Copyright (c) 2018 Lennart Espe**
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
