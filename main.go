@@ -269,6 +269,9 @@ func encodeTransferType(tt string) string {
 
 // buildEPLFListing generates a file listing.
 func buildEPLFListing(dir string) ([]byte, error) {
+	if runtime.GOOS == "windows" {
+		panic("EPLF listing does not work on Windows")
+	}
 	// This IS DIRTY. Does not work on Windows.
 	// TODO: REWORK THIS METHOD
 	output := ""
